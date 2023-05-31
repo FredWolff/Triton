@@ -1,0 +1,2 @@
+This repo will contain driver and fast sweep functions of temperature and magnetic field on the Oxford Instrument Triton 200 cryostat.
+The implementation will automatically control the turbo and heater during temperature sweeps.ß
