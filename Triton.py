@@ -6,6 +6,7 @@ import qcodes.utils.validators as vals
 def configure_socket(address: str) -> str:
     oxford_ins_port = 33576
     return "TCPIP0::" + address + f"::{oxford_ins_port}::SOCKET"
+            #"TCPIP0::" + address + f":{oxford_ins_port}::SOCKET"
 
 class Triton200(VisaInstrument):
     """
