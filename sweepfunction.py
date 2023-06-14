@@ -1,13 +1,28 @@
 from triton import OxfordTriton
-from typing import Tuple, Optional, NoReturn
+from typing import Tuple, Optional, NoReturn, Union
 import numpy as np
 from time import sleep
-from functools import partial
+import logging
 
 from qcodes.dataset import Measurement
 from qcodes.parameters import Parameter, ParameterBase
 from qcodes.instrument import Instrument
 
+logger = logging.getLogger('Temperature Sweep')
+logger.setLevel(logging.DEBUG)
+
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.INFO)
+
+file_handler = logging.FileHandler('~/TemperatureSweepLog.log')
+file_handler.setLevel(logging.DEBUG)
+
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+console_handler.setFormatter(formatter)
+file_handler.setFormatter(formatter)
+
+logger.addHandler(console_handler)
+logger.addHandler(file_handler)
 
 def T1dMeasurement(
             fridge: OxfordTriton,
@@ -22,9 +37,12 @@ def T1dMeasurement(
             magnet_active: bool=True,
             write_period: float=5.0,
 ):
-    assert type(t_mc_ch) == int
-    assert type(t_magnet_ch) == int
-    assert type(points) == int
+    if not isinstance(t_mc_ch, int):
+        raise TypeError('t_mc_ch must be an integer.')
+    if not isinstance(t_magnet_ch, int):
+        raise TypeError('t_magnet_ch must be an integer.')
+    if not isinstance(points, int):
+        raise TypeError('points must be an integer.')
     
     sample_temp = Temperature('MC Temperature', fridge, t_mc_ch)
 
@@ -49,6 +67,10 @@ def T1dMeasurement(
 
         setpoint_list = np.linspace(start, end, points)
         for setpoint in setpoint_list:
+            if magnet_active == True:
+                magnet_temperature = magnet_check(fridge, t_magnet_ch)
+                logging.debug(f'Magnet check passed with magnet temperature \
+                              T = {magnet_temperature} K')
             turbo_state, heater_range = _set_temp_setpoint(
                                                         fridge, 
                                                         sample_temp,
@@ -120,7 +142,10 @@ def T2dMeasurement(
 
         for temperature_setpoint in temperature_setpoints:
             if magnet_active == True:
-                magnet_check(fridge, t_magnet_ch)
+                magnet_temperature = magnet_check(fridge, t_magnet_ch)
+                logging.debug(f'Magnet check passed with magnet temperature \
+                 T = {magnet_temperature} K')
+
             turbo_state, heater_range = _set_temp_setpoint(
                                                         fridge, 
                                                         sample_temp,
@@ -228,9 +253,12 @@ def _toggle_turbo(
             
             while fridge.turb1_speed() > critical_speed:
                 sleep(1)
+            logging.debug(f'Continuing to setpoint {future_setpoint} K now. \
+                          System is currently at {sample_temp()} K and \
+                          turbo speed is {fridge.turb1_speed()} Hz.')
             fridge.pid_setpoint(future_setpoint)
                 
-        print('Turbo 1 has been switched ' + best_state)
+        logging.info('Turbo 1 has been switched ' + best_state)
     
     return best_state
 
@@ -255,7 +283,7 @@ def _set_heater_range(
 
     if heater_range != best_range:
         fridge.pid_range(best_range)
-        print(f"Heater range changed to {best_range} mA.")
+        logging.debug(f"Heater range changed to {best_range} mA.")
         return best_range
     return heater_range
 
@@ -271,7 +299,9 @@ def _set_temp_setpoint(
     ) -> None:
 
     if magnet_active == True:
-        magnet_check(fridge, t_magnet_ch)
+        magnet_temperature = magnet_check(fridge, t_magnet_ch)
+        logging.debug(f'Magnet check passed with magnet temperature \
+                      T = {magnet_temperature} K')
 
     fridge.pid_setpoint(setpoint)
     
@@ -288,14 +318,16 @@ def _set_temp_setpoint(
 
 def magnet_check(
         fridge: OxfordTriton, 
-        magnet_temp: Parameter,
-    ) -> Optional[NoReturn]:
+        t_magnet_ch: int,
+    ) -> Union[NoReturn, float]:
 
-    if magnet_temp() > 4.6:
+    magnet_temp = eval(f'fridge.T{t_magnet_ch}')
+    if magnet_temp > 4.6:
         fridge.pid_setpoint(0)
         # magnet should start sweeping down?
-        raise ValueError('Magnet temperature is above 4.6K. \
-                         Cool down or set magnet_active=False to deactivate magnet.')
+        raise ValueError(f'Magnet temperature is {magnet_temp} K. \
+                         Cool down or set magnet_active=False and deactivate magnet.')
+    return magnet_temp
     
 
 def _set_pid_controller(fridge: OxfordTriton, pid_values: Tuple[float, float, float]) -> None:
@@ -303,7 +335,7 @@ def _set_pid_controller(fridge: OxfordTriton, pid_values: Tuple[float, float, fl
     fridge.pid_p(P)
     fridge.pid_i(I)
     fridge.pid_d(D)
-    print(f'P = {P}, I = {I}, D = {D}')
+    logging.debug(f'PID-values set to: P = {P}, I = {I}, D = {D}')
 
 
 def _set_active_channels(
@@ -316,6 +348,8 @@ def _set_active_channels(
     keep_on_channels = ['T%s' % ch for ch in keep_on_channels]
     for ch in fridge.chan_temps.difference(keep_on_channels):
         eval(f'fridge.' + ch + '_enable("OFF")')
+        logging.debug(f'Excitation on temperature channel {ch} \
+                      is switched off')
 
 
 def _init_sweep_state(
@@ -327,8 +361,9 @@ def _init_sweep_state(
     ) -> Tuple[str, str]:
 
     if magnet_active:
-        magnet_check(fridge, t_magnet_ch)
-    print('Magnet is safe')
+        magnet_temperature = magnet_check(fridge, t_magnet_ch)
+        logging.info(f'Magnet check passed with magnet temperature \
+                 T = {magnet_temperature} K')
 
     _set_active_channels(fridge, t_mc_ch, t_magnet_ch)
     _set_pid_controller(fridge, pid)
