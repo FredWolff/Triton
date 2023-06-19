@@ -3,6 +3,7 @@ from typing import Tuple, Optional, NoReturn, Union
 import numpy as np
 from time import sleep
 import logging
+import sys
 
 from qcodes.dataset import Measurement
 from qcodes.parameters import Parameter, ParameterBase
@@ -11,13 +12,25 @@ from qcodes.instrument import Instrument
 logger = logging.getLogger('Temperature Sweep')
 logger.setLevel(logging.DEBUG)
 
+def handle_exception(exc_type, exc_value, exc_traceback):
+    if issubclass(exc_type, KeyboardInterrupt):
+        sys.__excepthook__(exc_type, exc_value, exc_traceback)
+    else:
+        logger.critical(
+            "Exception occured:", 
+            exc_info=(exc_type, exc_value, exc_traceback)
+        )
+
+sys.excepthook = handle_exception
+
 console_handler = logging.StreamHandler()
 console_handler.setLevel(logging.INFO)
 
-file_handler = logging.FileHandler('~/TemperatureSweepLog.log')
+file_handler = logging.FileHandler('./TemperatureSweepLog.log')
 file_handler.setLevel(logging.DEBUG)
 
-formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+formatter = logging.Formatter('%(asctime)s - %(name)s \
+                              - %(levelname)s - %(message)s')
 console_handler.setFormatter(formatter)
 file_handler.setFormatter(formatter)
 
@@ -53,6 +66,8 @@ def T1dMeasurement(
                                             magnet_active, 
                                             pid_values,
     )
+    logger.debug(f'Initial turbo 1 state: {turbo_state}, \
+                  and heater range: {heater_range}')
     
     meas = Measurement()
     meas.write_period = write_period
@@ -69,7 +84,7 @@ def T1dMeasurement(
         for setpoint in setpoint_list:
             if magnet_active == True:
                 magnet_temperature = magnet_check(fridge, t_magnet_ch)
-                logging.debug(f'Magnet check passed with magnet temperature \
+                logger.debug(f'Magnet check passed with magnet temperature \
                               T = {magnet_temperature} K')
             turbo_state, heater_range = _set_temp_setpoint(
                                                         fridge, 
@@ -85,6 +100,7 @@ def T1dMeasurement(
                 sleep(0.5)
 
             current_temperature = sample_temp()
+            logger.debug(f'Continuing to measurement at {current_temperature} K')
             params_get = [(param, param.get()) for param in params]
             datasaver.add_result((sample_temp, current_temperature), *params_get)
             sleep(wait_time)
@@ -110,10 +126,14 @@ def T2dMeasurement(
             magnet_active: bool=True,
             write_period: float=5.0,
 ):
-    assert type(t_mc_ch) == int
-    assert type(t_magnet_ch) == int
-    assert type(points_temp) == int
-    assert type(points_fast) == int
+    if not isinstance(t_mc_ch, int):
+        raise TypeError('t_mc_ch must be an integer.')
+    if not isinstance(t_magnet_ch, int):
+        raise TypeError('t_magnet_ch must be an integer.')
+    if not isinstance(points_temp, int):
+        raise TypeError('Number of temperature points must be an integer.')
+    if not isinstance(points_fast, int):
+        raise TypeError('Number of fast axis points must be an integer.')
 
     sample_temp = Temperature('MC Temperature', fridge, t_mc_ch)
     
@@ -124,6 +144,8 @@ def T2dMeasurement(
                                             magnet_active, 
                                             pid_values,
     )
+    logger.debug(f'Initial turbo 1 state: {turbo_state}, \
+                  and heater range: {heater_range}')
     
     meas = Measurement()
     meas.write_period = write_period
@@ -143,7 +165,7 @@ def T2dMeasurement(
         for temperature_setpoint in temperature_setpoints:
             if magnet_active == True:
                 magnet_temperature = magnet_check(fridge, t_magnet_ch)
-                logging.debug(f'Magnet check passed with magnet temperature \
+                logger.debug(f'Magnet check passed with magnet temperature \
                  T = {magnet_temperature} K')
 
             turbo_state, heater_range = _set_temp_setpoint(
@@ -162,6 +184,7 @@ def T2dMeasurement(
             sleep(wait_time_temp)
 
             current_temperature = sample_temp()
+            logger.debug(f'Continuing to measurement at {current_temperature} K')
             for setpoint_fast in fast_axis_setpoints:
                 parameter_fast(setpoint_fast) # is the execution blocked until setpoint_fast has been reached?
                 sleep(wait_time_fast)
@@ -177,7 +200,14 @@ def T2dMeasurement(
 
 
 class Temperature(Parameter):
-    def __init__(self, name: str, fridge: Instrument, temperature_ch: int, *args, **kwargs):
+    def __init__(
+            self, 
+            name: str, 
+            fridge: Instrument, 
+            temperature_ch: int, 
+            *args, 
+            **kwargs
+        ):
         self.temperature_measurement = eval(f'fridge.T{temperature_ch}')
         super().__init__(name=name.lower().replace(' ', '_'), unit='K', label=name, *args, **kwargs)
 
@@ -187,7 +217,7 @@ class Temperature(Parameter):
 
 def live_configurator(
     fridge: OxfordTriton,
-    sample_temp: Parameter,
+    sample_temp: ParameterBase,
     future_setpoint: float, 
     heater_range: float,
     turbo_state: str
@@ -241,7 +271,7 @@ def _toggle_turbo(
         best_state: str, 
         turbo_state: str,
         future_setpoint: float,
-        sample_temp: Parameter,
+        sample_temp: ParameterBase,
         critical_speed: float,
 ) -> str:
 
@@ -253,12 +283,12 @@ def _toggle_turbo(
             
             while fridge.turb1_speed() > critical_speed:
                 sleep(1)
-            logging.debug(f'Continuing to setpoint {future_setpoint} K now. \
-                          System is currently at {sample_temp()} K and \
-                          turbo speed is {fridge.turb1_speed()} Hz.')
+            logger.debug(f'Continuing to setpoint {future_setpoint} K now. \
+                          MC T = {sample_temp()} K and \
+                          turbo 1 speed = {fridge.turb1_speed()} Hz.')
             fridge.pid_setpoint(future_setpoint)
                 
-        logging.info('Turbo 1 has been switched ' + best_state)
+        logger.info('Turbo 1 has been switched ' + best_state)
     
     return best_state
 
@@ -283,7 +313,7 @@ def _set_heater_range(
 
     if heater_range != best_range:
         fridge.pid_range(best_range)
-        logging.debug(f"Heater range changed to {best_range} mA.")
+        logger.debug(f"Heater range changed to {best_range} mA.")
         return best_range
     return heater_range
 
@@ -300,7 +330,7 @@ def _set_temp_setpoint(
 
     if magnet_active == True:
         magnet_temperature = magnet_check(fridge, t_magnet_ch)
-        logging.debug(f'Magnet check passed with magnet temperature \
+        logger.debug(f'Magnet check passed with magnet temperature \
                       T = {magnet_temperature} K')
 
     fridge.pid_setpoint(setpoint)
@@ -330,12 +360,16 @@ def magnet_check(
     return magnet_temp
     
 
-def _set_pid_controller(fridge: OxfordTriton, pid_values: Tuple[float, float, float]) -> None:
+def _set_pid_controller(
+        fridge: OxfordTriton, 
+        pid_values: Tuple[float, float, float]
+) -> None:
+    
     P, I, D = pid_values
     fridge.pid_p(P)
     fridge.pid_i(I)
     fridge.pid_d(D)
-    logging.debug(f'PID-values set to: P = {P}, I = {I}, D = {D}')
+    logger.debug(f'PID-values set to: P = {P}, I = {I}, D = {D}')
 
 
 def _set_active_channels(
@@ -348,7 +382,7 @@ def _set_active_channels(
     keep_on_channels = ['T%s' % ch for ch in keep_on_channels]
     for ch in fridge.chan_temps.difference(keep_on_channels):
         eval(f'fridge.' + ch + '_enable("OFF")')
-        logging.debug(f'Excitation on temperature channel {ch} \
+        logger.debug(f'Excitation on temperature channel {ch} \
                       is switched off')
 
 
@@ -362,8 +396,8 @@ def _init_sweep_state(
 
     if magnet_active:
         magnet_temperature = magnet_check(fridge, t_magnet_ch)
-        logging.info(f'Magnet check passed with magnet temperature \
-                 T = {magnet_temperature} K')
+        logger.info(f'Magnet check passed with magnet temperature \
+                     T = {magnet_temperature} K')
 
     _set_active_channels(fridge, t_mc_ch, t_magnet_ch)
     _set_pid_controller(fridge, pid)
