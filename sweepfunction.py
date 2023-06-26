@@ -12,17 +12,6 @@ from qcodes.instrument import Instrument
 logger = logging.getLogger('Temperature Sweep')
 logger.setLevel(logging.DEBUG)
 
-def handle_exception(exc_type, exc_value, exc_traceback):
-    if issubclass(exc_type, KeyboardInterrupt):
-        sys.__excepthook__(exc_type, exc_value, exc_traceback)
-    else:
-        logger.critical(
-            "Exception occured:", 
-            exc_info=(exc_type, exc_value, exc_traceback)
-        )
-
-sys.excepthook = handle_exception
-
 console_handler = logging.StreamHandler()
 console_handler.setLevel(logging.INFO)
 
@@ -258,7 +247,7 @@ def live_configurator(
                                     _heater_range_curr, 
                                     sample_temp()
             )
-            heater_range = _set_heater_range(fridge, live_range, heater_range)
+            heater_range = _set_heater_range(fridge, sample_temp, live_range, heater_range)
             switch_range = (heater_range != target_heater_range)
         
         sleep(1)
@@ -307,13 +296,14 @@ def _get_best_heater_range(
 
 def _set_heater_range(
         fridge: OxfordTriton,
+        sample_temp: Parameter,
         best_range: float,
         heater_range: float,
 ) -> float:
 
     if heater_range != best_range:
         fridge.pid_range(best_range)
-        logger.debug(f"Heater range changed to {best_range} mA at T = {fridge.T8()} K.")
+        logger.debug(f"Heater range changed to {best_range} mA at T = {sample_temp()} K.")
         return best_range
     return heater_range
 
@@ -356,6 +346,7 @@ def magnet_check(
     if magnet_temp > 4.6:
         fridge.pid_setpoint(0)
         # magnet should start sweeping down?
+        logging.critical(f'Ended run due to hot magnet. T_magnet = {magnet_temp} K')
         raise ValueError(f'Magnet temperature is {magnet_temp} K. \
                          Cool down or set magnet_active=False and deactivate magnet.')
     return magnet_temp
