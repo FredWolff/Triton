@@ -207,7 +207,7 @@ class Temperature(Parameter):
             temperature_ch: int, 
             *args, 
             **kwargs
-        ):
+    ):
         self.temperature_measurement = eval(f'fridge.T{temperature_ch}')
         super().__init__(name=name.lower().replace(' ', '_'), unit='K', label=name, *args, **kwargs)
 
@@ -288,7 +288,7 @@ def _toggle_turbo(
                           turbo 1 speed = {fridge.turb1_speed()} Hz.')
             fridge.pid_setpoint(future_setpoint)
                 
-        logger.info('Turbo 1 has been switched ' + best_state)
+        logger.info('Turbo 1 has been switched ' + best_state + f'at T = {sample_temp()} K')
     
     return best_state
 
@@ -313,7 +313,7 @@ def _set_heater_range(
 
     if heater_range != best_range:
         fridge.pid_range(best_range)
-        logger.debug(f"Heater range changed to {best_range} mA.")
+        logger.debug(f"Heater range changed to {best_range} mA at T = {fridge.T8()} K.")
         return best_range
     return heater_range
 
@@ -326,7 +326,7 @@ def _set_temp_setpoint(
         t_magnet_ch: int,
         turbo_state: str,
         heater_range: float,
-    ) -> None:
+) -> None:
 
     if magnet_active == True:
         magnet_temperature = magnet_check(fridge, t_magnet_ch)
@@ -334,6 +334,7 @@ def _set_temp_setpoint(
                       T = {magnet_temperature} K')
 
     fridge.pid_setpoint(setpoint)
+    logger.debug(f'New setpoint T = {setpoint} K')
     
     turbo_state, heater_range = live_configurator(
                                             fridge, 
@@ -349,7 +350,7 @@ def _set_temp_setpoint(
 def magnet_check(
         fridge: OxfordTriton, 
         t_magnet_ch: int,
-    ) -> Union[NoReturn, float]:
+) -> Union[NoReturn, float]:
 
     magnet_temp = eval(f'fridge.T{t_magnet_ch}')
     if magnet_temp > 4.6:
@@ -392,7 +393,7 @@ def _init_sweep_state(
                 t_magnet_ch: int,
                 magnet_active: bool,
                 pid: Tuple[float, float, float],
-    ) -> Tuple[str, str]:
+) -> Tuple[str, str]:
 
     if magnet_active:
         magnet_temperature = magnet_check(fridge, t_magnet_ch)
