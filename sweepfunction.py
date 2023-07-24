@@ -373,7 +373,7 @@ def _set_active_channels(
     keep_on_channels = [t_mc_ch, t_magnet_ch]
     keep_on_channels = ['T%s' % ch for ch in keep_on_channels]
     for ch in fridge.chan_temps.difference(keep_on_channels):
-        eval(f'fridge.' + ch + '_enable("OFF")')
+        eval(f'fridge.' + ch + '_state("off")')
         logger.debug(f'Excitation on temperature channel {ch} \
                       is switched off')
 
