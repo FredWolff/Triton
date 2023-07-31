@@ -194,7 +194,7 @@ def T2dMeasurement(
             current_temperature = sample_temp()
             logger.debug(f'Continuing to measurement at {current_temperature} K')
             for setpoint_fast in fast_axis_setpoints:
-                parameter_fast(setpoint_fast) # is the execution blocked until setpoint_fast has been reached?
+                parameter_fast(setpoint_fast)
                 sleep(wait_time_fast)
 
                 params_get = [(param, param.get()) for param in params]
@@ -238,7 +238,10 @@ def live_configurator(
     state = {1: 'on', -1: 'off'}
     critical_temp = .78
     critical_speed = 100
-    target_state = state[np.sign(critical_temp - future_setpoint)]
+    if critical_temp == future_setpoint:
+        target_state = 'off'
+    else:
+        target_state = state[np.sign(critical_temp - future_setpoint)]
     switch_turbo = (turbo_state != target_state)
 
     _heater_range_curr = fridge._heater_range_curr
