@@ -213,7 +213,7 @@ def live_configurator(
 ) -> Tuple[float, float]:
     
     state = {1: 'on', -1: 'off'}
-    critical_temp = .8
+    critical_temp = .78
     critical_speed = 100
     target_state = state[np.sign(critical_temp - future_setpoint)]
     switch_turbo = (turbo_state != target_state)
@@ -266,8 +266,10 @@ def _toggle_turbo(
 
     if turbo_state != best_state:
 
+        fridge.turb1_state(best_state)
+        logger.info('Turbo 1 has been switched ' + best_state + f' at T = {sample_temp()} K')
+
         if best_state == 'off':
-            fridge.turb1_state(best_state)
             fridge.pid_setpoint(sample_temp())
             
             while fridge.turb1_speed() > critical_speed:
@@ -276,8 +278,6 @@ def _toggle_turbo(
                           MC T = {sample_temp()} K and \
                           turbo 1 speed = {fridge.turb1_speed()} Hz.')
             fridge.pid_setpoint(future_setpoint)
-                
-        logger.info('Turbo 1 has been switched ' + best_state + f'at T = {sample_temp()} K')
     
     return best_state
 
@@ -288,10 +288,9 @@ def _get_best_heater_range(
         temperature: float,
 ) -> float:
     
-    for temperature_threshold, current in zip(_heater_range_temp, _heater_range_curr):
+    for temperature_threshold, current in zip(_heater_range_temp[:-2], _heater_range_curr[1:-1]):
         if temperature < temperature_threshold:
-            break
-        return current
+            return current
 
 
 def _set_heater_range(
@@ -342,7 +341,7 @@ def magnet_check(
         t_magnet_ch: int,
 ) -> Union[NoReturn, float]:
 
-    magnet_temp = eval(f'fridge.T{t_magnet_ch}')
+    magnet_temp = eval(f'fridge.T{t_magnet_ch}()')
     if magnet_temp > 4.6:
         fridge.pid_setpoint(0)
         # magnet should start sweeping down?
@@ -391,13 +390,16 @@ def _init_sweep_state(
         logger.info(f'Magnet check passed with magnet temperature \
                      T = {magnet_temperature} K')
 
+    if not magnet_active:
+        t_magnet_ch = t_mc_ch
+
     _set_active_channels(fridge, t_mc_ch, t_magnet_ch)
     _set_pid_controller(fridge, pid)
 
     return fridge.turb1_state(), fridge.pid_range()
 
 
-def _close(temperature: float, setpoint: float, tolerance: float=1e-4):
+def _close(temperature: float, setpoint: float, tolerance: float=5e-4):
     if abs(temperature - setpoint) < tolerance:
         return True
     else:
