@@ -1,14 +1,12 @@
 from triton import OxfordTriton
 from qcodes.instrument_drivers.Lakeshore.Model_372 import Model_372
-from typing import Tuple, Optional, NoReturn, Union
+from typing import Tuple, NoReturn, Union
 import numpy as np
 from time import sleep
 import logging
-import sys
 
 from qcodes.dataset import Measurement
 from qcodes.parameters import Parameter, ParameterBase
-from qcodes.instrument import Instrument
 
 logger = logging.getLogger('Temperature Sweep')
 logger.setLevel(logging.DEBUG)
@@ -35,7 +33,7 @@ def T1dMeasurement(
             points: int,
             wait_time: float,
             *param_meas,
-            pid_values: Tuple[float, float, float]=(10., 20., 0.),
+            pid: Tuple[float, float, float]=(10., 20., 0.),
             t_mc_ch: int=8,
             t_magnet_ch: int=13,
             magnet_active: bool=False,
@@ -52,7 +50,9 @@ def T1dMeasurement(
     if not isinstance(points, int):
         raise TypeError('points must be an integer.')
     
-    sample_temp = Temperature('MC Temperature', lakeshore, t_mc_ch)
+    temp_setpoints = Parameter('temperature_setpoints', label='Temperature Setpoints', unit='K')
+    sample_temp = Temperature('MC Temperature', fridge, lakeshore, t_mc_ch)
+    setpoint_temp_diff = Parameter('temperature_deviation', label='Temperature Deviation', unit='K')
 
     turbo_state, heater_range = _init_sweep_state(
                                             fridge,
@@ -60,7 +60,7 @@ def T1dMeasurement(
                                             t_mc_ch, 
                                             t_magnet_ch, 
                                             magnet_active, 
-                                            pid_values,
+                                            pid,
                                             wait_cycle_time,
                                             wait_tolerance,
                                             wait_equilibration_time,
@@ -70,12 +70,14 @@ def T1dMeasurement(
     
     meas = Measurement()
     meas.write_period = write_period
-    meas.register_parameter(sample_temp)
-    params = []
+    meas.register_parameter(temp_setpoints)
+    params = [sample_temp]
+    meas.register_parameter(param, setpoints=(temp_setpoints,))
+    meas.register_parameter(setpoint_temp_diff, setpoints=(temp_setpoints, ))
     for param in param_meas:
         if isinstance(param, ParameterBase):
             params.append(param)
-            meas.register_parameter(param, setpoints=(sample_temp,))
+            meas.register_parameter(param, setpoints=(temp_setpoints,))
 
     with meas.run() as datasaver:
 
@@ -100,7 +102,11 @@ def T1dMeasurement(
             current_temperature = sample_temp()
             logger.debug(f'Continuing to measurement at {current_temperature} K')
             params_get = [(param, param.get()) for param in params]
-            datasaver.add_result((sample_temp, current_temperature), *params_get)
+            datasaver.add_result(
+                (temp_setpoints, setpoint), 
+                (setpoint_temp_diff, setpoint - sample_temp()),
+                *params_get
+            )
             sleep(wait_time)
 
         return datasaver.dataset
@@ -119,7 +125,7 @@ def T2dMeasurement(
             points_fast: int,
             wait_time_fast: float,
             *param_meas,
-            pid_values: Tuple[float, float, float] = (10., 20., 0.),
+            pid: Tuple[float, float, float] = (10., 20., 0.),
             t_mc_ch: int=8,
             t_magnet_ch: int=13,
             magnet_active: bool=False,
@@ -138,8 +144,9 @@ def T2dMeasurement(
     if not isinstance(points_fast, int):
         raise TypeError('Number of fast axis points must be an integer.')
 
-    temp_setpoints = Parameter('temperature_setpoints', label='Temperature Setpoints')
-    sample_temp = Temperature('MC Temperature', lakeshore, t_mc_ch)
+    temp_setpoints = Parameter('temperature_setpoints', label='Temperature Setpoints', unit='K')
+    sample_temp = Temperature('MC Temperature', fridge, lakeshore, t_mc_ch)
+    setpoint_temp_diff = Parameter('temperature_deviation', label='Temperature Deviation', unit='K')
     
     turbo_state, heater_range = _init_sweep_state(
                                             fridge,
@@ -147,7 +154,7 @@ def T2dMeasurement(
                                             t_mc_ch, 
                                             t_magnet_ch, 
                                             magnet_active, 
-                                            pid_values,
+                                            pid,
                                             wait_cycle_time,
                                             wait_tolerance,
                                             wait_equilibration_time,
@@ -161,6 +168,7 @@ def T2dMeasurement(
     meas.register_parameter(parameter_fast)
     params = [sample_temp]
     meas.register_parameter(sample_temp, setpoints=(temp_setpoints, parameter_fast))
+    meas.register_parameter(setpoint_temp_diff, setpoints=(temp_setpoints, parameter_fast))
     for param in param_meas:
         if isinstance(param, ParameterBase):
             params.append(param)
@@ -201,6 +209,7 @@ def T2dMeasurement(
                 datasaver.add_result(
                     (temp_setpoints, temperature_setpoint), 
                     (parameter_fast, parameter_fast()),
+                    (setpoint_temp_diff, temperature_setpoint - sample_temp()),
                     *params_get
                 )
 
@@ -211,20 +220,72 @@ class Temperature(Parameter):
     def __init__(
             self, 
             name: str, 
-            lakeshore: Model_372, 
+            fridge: OxfordTriton,
+            lakeshore: Model_372,
             temperature_ch: int, 
+            magnet_active: bool=False,
+            t_magnet_ch: int=13,
+            pid: Tuple[float, float, float] = (10., 20., 0.),
+            wait_cycle_time: float=0.5,
+            wait_tolerance: float=0.1,
+            wait_equilibration_time: float=1.5,
+            temperature_tolerance: float=5e-4,
             *args, 
             **kwargs
     ):
-        temp_str = '0' + str(temperature_ch)
-        if len(temp_str) > 2:
-            temp_str = temp_str[1:]
-        self.temperature_measurement = eval(f'lakeshore.ch{temp_str}.temperature')
+        self.fridge = fridge
+        self.lakeshore = lakeshore
+        self.magnet_active = magnet_active
+        self.ch_of_interest = temperature_ch
+        self.t_magnet_ch = t_magnet_ch
+        self.temperature_measurement = self.construct_ch(lakeshore)
+        self.pid = pid
+        self.turbo_state = fridge.turb1.state()
+        self.heater_range = lakeshore.sample_heater.output_range()
+        self.wait_cycle_time = wait_cycle_time
+        self.wait_tolerance = wait_tolerance
+        self.wait_equilibration_time = wait_equilibration_time
+        self.temperature_tolerance = temperature_tolerance
         super().__init__(name=name.lower().replace(' ', '_'), unit='K', label=name, *args, **kwargs)
 
-    def get_raw(self):
+    def get_raw(self) -> float:
         return self.temperature_measurement()
+    
+    def set_raw(self, setpoint: float) -> None:
+        _move_to_setpoint(
+            self.fridge,
+            self.lakeshore,
+            self.get_raw,
+            setpoint, 
+            self.magnet_active, 
+            self.t_magnet_ch,
+            self.turbo_state,
+            self.heater_range,
+            self.temperature_tolerance
+        )
 
+    def prepare_system(self) -> None:
+        _init_sweep_state(
+            self.fridge,
+            self.lakeshore,
+            self.ch_of_interest,
+            self.t_magnet_ch,
+            self.magnet_active,
+            self.pid,
+            self.wait_cycle_time,
+            self.wait_tolerance,
+            self.wait_equilibration_time,
+        )
+
+def construct_ch(self, lakeshore: Model_372) -> callable:
+    temp_str = self.format_ch(self.ch_of_interest)
+    return eval(f'lakeshore.ch{temp_str}.temperature')
+
+def format_ch(self, temperature_ch: int) -> str:
+    temp_str = '0' + str(temperature_ch)
+    if len(temp_str) > 2:
+        temp_str = temp_str[1:]
+    return temp_str
 
 def live_configurator(
     fridge: OxfordTriton,
@@ -232,7 +293,9 @@ def live_configurator(
     sample_temp: ParameterBase,
     future_setpoint: float, 
     heater_range: float,
-    turbo_state: str
+    turbo_state: str,
+    _heater_range_temp: list,
+    _heater_range_curr: list,
 ) -> Tuple[float, float]:
     
     state = {1: 'on', -1: 'off'}
@@ -244,8 +307,6 @@ def live_configurator(
         target_state = state[np.sign(critical_temp - future_setpoint)]
     switch_turbo = (turbo_state != target_state)
 
-    _heater_range_curr = fridge._heater_range_curr
-    _heater_range_temp = fridge._heater_range_temp
     target_heater_range = _get_best_heater_range(
                                         _heater_range_temp, 
                                         _heater_range_curr, 
@@ -349,13 +410,16 @@ def _move_to_setpoint(
         temperature_tolerance: float
 ) -> None:
 
+    _heater_range_curr = [1, 3.16, 10, 31.6]
+    _heater_range_temp = [0.03, 0.1, 0.3, 1]
+
     if magnet_active == True:
         magnet_temperature = magnet_check(lakeshore, t_magnet_ch)
         logger.debug(f'Magnet check passed with magnet temperature \
                       T = {magnet_temperature} K')
 
     if heater_range == 'off':
-        best_heater_range = _get_best_heater_range(fridge._heater_range_temp, fridge._heater_range_curr, sample_temp())
+        best_heater_range = _get_best_heater_range(_heater_range_temp, _heater_range_curr, sample_temp())
         _set_heater_range(lakeshore, sample_temp, best_heater_range, heater_range)
 
     lakeshore.sample_heater.setpoint(setpoint)
@@ -367,7 +431,9 @@ def _move_to_setpoint(
                                             sample_temp, 
                                             setpoint, 
                                             heater_range, 
-                                            turbo_state
+                                            turbo_state,
+                                            _heater_range_temp,
+                                            _heater_range_curr,
     )
 
     while not _stable(sample_temp, setpoint, temperature_tolerance):
@@ -382,9 +448,8 @@ def magnet_check(
 ) -> Union[NoReturn, float]:
 
     magnet_temp = eval(f'lakeshore.ch{t_magnet_ch}.temperature()')
-    if magnet_temp > 4.6:
+    if magnet_temp > 4.8:
         lakeshore.sample_heater.setpoint(0)
-        # magnet should start sweeping down?
         logging.critical(f'Ended run due to hot magnet. T_magnet = {magnet_temp} K')
         raise ValueError(f'Magnet temperature is {magnet_temp} K. \
                          Cool down or set magnet_active=False and deactivate magnet.')
@@ -393,10 +458,10 @@ def magnet_check(
 
 def _set_pid_controller(
         lakeshore: Model_372, 
-        pid_values: Tuple[float, float, float]
+        pid: Tuple[float, float, float]
 ) -> None:
     
-    P, I, D = pid_values
+    P, I, D = pid
     lakeshore.sample_heater.P(P)
     lakeshore.sample_heater.I(I)
     lakeshore.sample_heater.D(D)
