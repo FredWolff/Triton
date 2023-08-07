@@ -8,6 +8,11 @@ import logging
 from qcodes.dataset import Measurement
 from qcodes.parameters import Parameter, ParameterBase
 
+
+_heater_range_curr = [1, 3.16, 10, 31.6]
+_heater_range_temp = [0.03, 0.1, 0.3, 1]
+
+
 logger = logging.getLogger('Temperature Sweep')
 logger.setLevel(logging.DEBUG)
 
@@ -222,7 +227,7 @@ class Temperature(Parameter):
             name: str, 
             fridge: OxfordTriton,
             lakeshore: Model_372,
-            temperature_ch: int, 
+            temperature_ch: int=8, 
             magnet_active: bool=False,
             t_magnet_ch: int=13,
             pid: Tuple[float, float, float] = (10., 20., 0.),
@@ -409,9 +414,6 @@ def _move_to_setpoint(
         heater_range: float,
         temperature_tolerance: float
 ) -> None:
-
-    _heater_range_curr = [1, 3.16, 10, 31.6]
-    _heater_range_temp = [0.03, 0.1, 0.3, 1]
 
     if magnet_active == True:
         magnet_temperature = magnet_check(lakeshore, t_magnet_ch)
